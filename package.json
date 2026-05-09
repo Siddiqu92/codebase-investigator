@@ -8,6 +8,9 @@
     "start": "next start"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.1",
+    "@octokit/rest": "^22.0.1",
+    "ai": "^6.0.177",
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4"
