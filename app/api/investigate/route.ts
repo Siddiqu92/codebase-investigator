@@ -2,9 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { Octokit } from "@octokit/rest";
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-
 function parseGitHubUrl(url: string) {
   const match = url.match(/github\.com\/([^/]+)\/([^/]+)/);
   if (!match) throw new Error("Invalid GitHub URL");
@@ -12,12 +9,11 @@ function parseGitHubUrl(url: string) {
 }
 
 async function fetchRepoFiles(owner: string, repo: string): Promise<string> {
+  const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
   const files: string[] = [];
-
   async function fetchDir(path = "") {
     const { data } = await octokit.repos.getContent({ owner, repo, path });
     if (!Array.isArray(data)) return;
-
     for (const item of data) {
       if (item.type === "dir" && !["node_modules", ".git", "dist", ".next"].includes(item.name)) {
         await fetchDir(item.path);
@@ -32,37 +28,35 @@ async function fetchRepoFiles(owner: string, repo: string): Promise<string> {
       }
     }
   }
-
   await fetchDir();
   return files.join("").slice(0, 80000);
 }
 
-async function auditAnswer(question: string, answer: string, codeContext: string): Promise<string> {
+async function auditAnswer(question: string, answer: string, codeContext: string, apiKey: string): Promise<string> {
+  const anthropic = new Anthropic({ apiKey });
   const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-6",
     max_tokens: 1000,
-    system: `You are a strict code review auditor. You receive a question, an answer about a codebase, and the actual code. 
-Your job is to audit the answer for:
+    system: `You are a strict code review auditor. Audit the answer for:
 1. Hallucinated file paths or line numbers not in the code
 2. Overconfident claims not supported by the code
 3. Suggested fixes that could break something else
 4. Logical gaps in reasoning
-
-Be specific. Quote the code when catching errors. End with: TRUST LEVEL: HIGH / MEDIUM / LOW`,
-    messages: [
-      {
-        role: "user",
-        content: `QUESTION: ${question}\n\nANSWER TO AUDIT: ${answer}\n\nACTUAL CODE:\n${codeContext.slice(0, 30000)}`,
-      },
-    ],
+Be specific. End with: TRUST LEVEL: HIGH / MEDIUM / LOW`,
+    messages: [{ role: "user", content: `QUESTION: ${question}\n\nANSWER TO AUDIT: ${answer}\n\nACTUAL CODE:\n${codeContext.slice(0, 30000)}` }],
   });
   return response.content[0].type === "text" ? response.content[0].text : "";
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { githubUrl, question, conversationHistory, codeContext: existingContext } = await req.json();
+    const { githubUrl, question, conversationHistory, codeContext: existingContext, apiKey } = await req.json();
 
+    if (!apiKey || !apiKey.startsWith("sk-ant-")) {
+      return NextResponse.json({ error: "Valid Anthropic API key required (sk-ant-...)" }, { status: 400 });
+    }
+
+    const anthropic = new Anthropic({ apiKey });
     let codeContext = existingContext;
 
     if (!codeContext && githubUrl) {
@@ -70,26 +64,19 @@ export async function POST(req: NextRequest) {
       codeContext = await fetchRepoFiles(owner, repo);
     }
 
-    const messages = [
-      ...(conversationHistory || []),
-      { role: "user", content: question },
-    ];
-
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 1000,
-      system: `You are an expert code investigator. You have been given a codebase to analyze.
-Always ground your answers in specific files and line numbers.
+      system: `You are an expert code investigator. Always ground answers in specific files and line numbers.
 Format citations as: [filename:line_range]
-Be direct and specific. Never make up file paths.
-
+Never make up file paths.
 CODEBASE:
 ${codeContext}`,
-      messages,
+      messages: [...(conversationHistory || []), { role: "user", content: question }],
     });
 
     const answer = response.content[0].type === "text" ? response.content[0].text : "";
-    const audit = await auditAnswer(question, answer, codeContext);
+    const audit = await auditAnswer(question, answer, codeContext, apiKey);
 
     return NextResponse.json({ answer, audit, codeContext });
   } catch (error: unknown) {

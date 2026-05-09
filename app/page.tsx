@@ -8,6 +8,8 @@ interface Message {
 }
 
 export default function Home() {
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeySet, setApiKeySet] = useState(false);
   const [githubUrl, setGithubUrl] = useState("");
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -21,10 +23,7 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const conversationHistory = messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-  }));
+  const conversationHistory = messages.map((m) => ({ role: m.role, content: m.content }));
 
   async function handleSubmit() {
     if (!question.trim() || loading) return;
@@ -44,43 +43,74 @@ export default function Home() {
           question: currentQuestion,
           conversationHistory,
           codeContext: repoLoaded ? codeContext : null,
+          apiKey,
         }),
       });
 
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-
-      if (!repoLoaded) {
-        setCodeContext(data.codeContext);
-        setRepoLoaded(true);
-      }
-
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.answer, audit: data.audit },
-      ]);
+      if (!repoLoaded) { setCodeContext(data.codeContext); setRepoLoaded(true); }
+      setMessages((prev) => [...prev, { role: "assistant", content: data.answer, audit: data.audit }]);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Something went wrong";
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Error: ${message}` },
-      ]);
+      setMessages((prev) => [...prev, { role: "assistant", content: `Error: ${message}` }]);
     } finally {
       setLoading(false);
     }
   }
 
+  if (!apiKeySet) {
+    return (
+      <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center">
+        <div className="w-full max-w-md px-6">
+          <h1 className="text-2xl font-bold text-white mb-2">Codebase Investigator</h1>
+          <p className="text-gray-400 text-sm mb-8">AI-powered code analysis with audit trail</p>
+          <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
+            <label className="block text-sm text-gray-400 mb-2">Anthropic API Key</label>
+            <input
+              type="password"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-blue-500 mb-2"
+              placeholder="sk-ant-..."
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && apiKey.startsWith("sk-ant-")) setApiKeySet(true); }}
+            />
+            <p className="text-xs text-gray-500 mb-4">
+              Your key stays in the browser — never stored or logged. Get one at{" "}
+              <a href="https://console.anthropic.com" target="_blank" className="text-blue-400 underline">console.anthropic.com</a>
+            </p>
+            <button
+              onClick={() => setApiKeySet(true)}
+              disabled={!apiKey.startsWith("sk-ant-")}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed py-3 rounded-lg text-sm font-medium transition-colors"
+            >
+              Start Investigating
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
-      <div className="border-b border-gray-800 px-6 py-4">
-        <h1 className="text-xl font-bold text-white">Codebase Investigator</h1>
-        <p className="text-sm text-gray-400">Paste a GitHub URL and ask questions about the code</p>
+      <div className="border-b border-gray-800 px-6 py-4 flex justify-between items-center">
+        <div>
+          <h1 className="text-xl font-bold text-white">Codebase Investigator</h1>
+          <p className="text-sm text-gray-400">Paste a GitHub URL and ask questions about the code</p>
+        </div>
+        <button
+          onClick={() => { setApiKeySet(false); setApiKey(""); setMessages([]); setRepoLoaded(false); setCodeContext(""); }}
+          className="text-xs text-gray-500 hover:text-gray-300 border border-gray-700 px-3 py-1 rounded-lg"
+        >
+          Change API Key
+        </button>
       </div>
 
       {!repoLoaded && (
-        <div className="px-6 py-4 border-b border-gray-800 flex gap-3">
+        <div className="px-6 py-4 border-b border-gray-800">
           <input
-            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
+            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-blue-500"
             placeholder="https://github.com/owner/repo"
             value={githubUrl}
             onChange={(e) => setGithubUrl(e.target.value)}
@@ -122,7 +152,7 @@ export default function Home() {
                         <span>{expandedAudit === i ? "▲ Hide" : "▼ Show"}</span>
                       </button>
                       {expandedAudit === i && (
-                        <div className="px-4 py-3 bg-gray-850 text-xs text-gray-300">
+                        <div className="px-4 py-3 text-xs text-gray-300">
                           <pre className="whitespace-pre-wrap font-sans">{msg.audit}</pre>
                         </div>
                       )}
