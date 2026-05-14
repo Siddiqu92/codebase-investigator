@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
 import { Octokit } from "@octokit/rest";
 
@@ -6,6 +7,12 @@ function parseGitHubUrl(url: string) {
   const match = url.match(/github\.com\/([^/]+)\/([^/]+)/);
   if (!match) throw new Error("Invalid GitHub URL");
   return { owner: match[1], repo: match[2].replace(".git", "") };
+}
+
+function detectKeyType(apiKey: string): "anthropic" | "google" | "unknown" {
+  if (apiKey.startsWith("sk-ant-")) return "anthropic";
+  if (apiKey.startsWith("AIza")) return "google";
+  return "unknown";
 }
 
 async function fetchRepoFiles(owner: string, repo: string): Promise<string> {
@@ -32,53 +39,85 @@ async function fetchRepoFiles(owner: string, repo: string): Promise<string> {
   return files.join("").slice(0, 80000);
 }
 
-async function auditAnswer(question: string, answer: string, codeContext: string, apiKey: string): Promise<string> {
+async function askAnthropic(apiKey: string, systemPrompt: string, messages: {role: string, content: string}[]): Promise<string> {
   const anthropic = new Anthropic({ apiKey });
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 1000,
-    system: `You are a strict code review auditor. Audit the answer for:
-1. Hallucinated file paths or line numbers not in the code
-2. Overconfident claims not supported by the code
-3. Suggested fixes that could break something else
-4. Logical gaps in reasoning
-Be specific. End with: TRUST LEVEL: HIGH / MEDIUM / LOW`,
-    messages: [{ role: "user", content: `QUESTION: ${question}\n\nANSWER TO AUDIT: ${answer}\n\nACTUAL CODE:\n${codeContext.slice(0, 30000)}` }],
+    system: systemPrompt,
+    messages: messages as {role: "user" | "assistant", content: string}[],
   });
   return response.content[0].type === "text" ? response.content[0].text : "";
+}
+
+async function askGemini(apiKey: string, systemPrompt: string, messages: {role: string, content: string}[]): Promise<string> {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash", systemInstruction: systemPrompt });
+  
+  const history = messages.slice(0, -1).map(m => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+  
+  const chat = model.startChat({ history });
+  const lastMessage = messages[messages.length - 1].content;
+  const result = await chat.sendMessage(lastMessage);
+  return result.response.text();
 }
 
 export async function POST(req: NextRequest) {
   try {
     const { githubUrl, question, conversationHistory, codeContext: existingContext, apiKey } = await req.json();
 
-    if (!apiKey || !apiKey.startsWith("sk-ant-")) {
-      return NextResponse.json({ error: "Valid Anthropic API key required (sk-ant-...)" }, { status: 400 });
+    const keyType = detectKeyType(apiKey);
+    if (keyType === "unknown") {
+      return NextResponse.json({ error: "Invalid API key. Use Anthropic (sk-ant-...) or Google AI Studio (AIza...) key." }, { status: 400 });
     }
 
-    const anthropic = new Anthropic({ apiKey });
     let codeContext = existingContext;
-
     if (!codeContext && githubUrl) {
       const { owner, repo } = parseGitHubUrl(githubUrl);
       codeContext = await fetchRepoFiles(owner, repo);
     }
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      system: `You are an expert code investigator. Always ground answers in specific files and line numbers.
+    const systemPrompt = `You are an expert code investigator. Always ground answers in specific files and line numbers.
 Format citations as: [filename:line_range]
 Never make up file paths.
 CODEBASE:
-${codeContext}`,
-      messages: [...(conversationHistory || []), { role: "user", content: question }],
-    });
+${codeContext}`;
 
-    const answer = response.content[0].type === "text" ? response.content[0].text : "";
-    const audit = await auditAnswer(question, answer, codeContext, apiKey);
+    const messages = [...(conversationHistory || []), { role: "user", content: question }];
 
-    return NextResponse.json({ answer, audit, codeContext });
+    let answer = "";
+    let audit = "";
+
+    if (keyType === "anthropic") {
+      answer = await askAnthropic(apiKey, systemPrompt, messages);
+      
+      // Audit with separate Anthropic call
+      const auditPrompt = `You are a strict code review auditor. Audit this answer for:
+1. Hallucinated file paths or line numbers
+2. Overconfident claims not supported by code
+3. Suggested fixes that could break something else
+4. Logical gaps
+Be specific. End with: TRUST LEVEL: HIGH / MEDIUM / LOW`;
+      
+      audit = await askAnthropic(apiKey, auditPrompt, [
+        { role: "user", content: `QUESTION: ${question}\n\nANSWER TO AUDIT: ${answer}\n\nACTUAL CODE:\n${codeContext.slice(0, 30000)}` }
+      ]);
+
+    } else {
+      answer = await askGemini(apiKey, systemPrompt, messages);
+      
+      // Audit with separate Gemini call
+      const auditSystemPrompt = `You are a strict code review auditor. Audit answers for hallucinated citations, overconfident claims, and logical gaps. End with: TRUST LEVEL: HIGH / MEDIUM / LOW`;
+      
+      audit = await askGemini(apiKey, auditSystemPrompt, [
+        { role: "user", content: `QUESTION: ${question}\n\nANSWER TO AUDIT: ${answer}\n\nACTUAL CODE:\n${codeContext.slice(0, 30000)}` }
+      ]);
+    }
+
+    return NextResponse.json({ answer, audit, codeContext, provider: keyType });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });

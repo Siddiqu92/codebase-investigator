@@ -10,6 +10,7 @@ interface Message {
 export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [apiKeySet, setApiKeySet] = useState(false);
+  const [provider, setProvider] = useState("");
   const [githubUrl, setGithubUrl] = useState("");
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -22,6 +23,12 @@ export default function Home() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  function detectProvider(key: string) {
+    if (key.startsWith("sk-ant-")) return "anthropic";
+    if (key.startsWith("AIza")) return "google";
+    return "";
+  }
 
   const conversationHistory = messages.map((m) => ({ role: m.role, content: m.content }));
 
@@ -60,28 +67,38 @@ export default function Home() {
   }
 
   if (!apiKeySet) {
+    const detectedProvider = detectProvider(apiKey);
     return (
       <main className="min-h-screen bg-gray-950 text-gray-100 flex items-center justify-center">
         <div className="w-full max-w-md px-6">
           <h1 className="text-2xl font-bold text-white mb-2">Codebase Investigator</h1>
           <p className="text-gray-400 text-sm mb-8">AI-powered code analysis with audit trail</p>
           <div className="bg-gray-900 rounded-xl p-6 border border-gray-800">
-            <label className="block text-sm text-gray-400 mb-2">Anthropic API Key</label>
+            <label className="block text-sm text-gray-400 mb-2">API Key</label>
             <input
               type="password"
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-blue-500 mb-2"
-              placeholder="sk-ant-..."
+              placeholder="sk-ant-... or AIza..."
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && apiKey.startsWith("sk-ant-")) setApiKeySet(true); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && detectedProvider) { setProvider(detectedProvider); setApiKeySet(true); }}}
             />
+            {detectedProvider === "anthropic" && (
+              <p className="text-xs text-green-400 mb-2">✓ Anthropic API key detected</p>
+            )}
+            {detectedProvider === "google" && (
+              <p className="text-xs text-green-400 mb-2">✓ Google AI Studio key detected</p>
+            )}
             <p className="text-xs text-gray-500 mb-4">
-              Your key stays in the browser — never stored or logged. Get one at{" "}
-              <a href="https://console.anthropic.com" target="_blank" className="text-blue-400 underline">console.anthropic.com</a>
+              Supports Anthropic (sk-ant-...) and Google AI Studio (AIza...) keys. Never stored or logged.
+              <br />
+              Get Anthropic key: <a href="https://console.anthropic.com" target="_blank" className="text-blue-400 underline">console.anthropic.com</a>
+              <br />
+              Get Google key: <a href="https://aistudio.google.com/apikey" target="_blank" className="text-blue-400 underline">aistudio.google.com</a>
             </p>
             <button
-              onClick={() => setApiKeySet(true)}
-              disabled={!apiKey.startsWith("sk-ant-")}
+              onClick={() => { setProvider(detectedProvider); setApiKeySet(true); }}
+              disabled={!detectedProvider}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed py-3 rounded-lg text-sm font-medium transition-colors"
             >
               Start Investigating
@@ -97,10 +114,12 @@ export default function Home() {
       <div className="border-b border-gray-800 px-6 py-4 flex justify-between items-center">
         <div>
           <h1 className="text-xl font-bold text-white">Codebase Investigator</h1>
-          <p className="text-sm text-gray-400">Paste a GitHub URL and ask questions about the code</p>
+          <p className="text-sm text-gray-400">
+            Using: <span className="text-green-400">{provider === "anthropic" ? "Claude (Anthropic)" : "Gemini (Google)"}</span>
+          </p>
         </div>
         <button
-          onClick={() => { setApiKeySet(false); setApiKey(""); setMessages([]); setRepoLoaded(false); setCodeContext(""); }}
+          onClick={() => { setApiKeySet(false); setApiKey(""); setMessages([]); setRepoLoaded(false); setCodeContext(""); setProvider(""); }}
           className="text-xs text-gray-500 hover:text-gray-300 border border-gray-700 px-3 py-1 rounded-lg"
         >
           Change API Key

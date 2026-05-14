@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1",
+    "@google/generative-ai": "^0.24.1",
     "@octokit/rest": "^22.0.1",
     "ai": "^6.0.177",
     "next": "16.2.6",
